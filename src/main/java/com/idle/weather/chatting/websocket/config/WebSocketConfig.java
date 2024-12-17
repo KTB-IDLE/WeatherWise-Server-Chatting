@@ -1,5 +1,6 @@
 package com.idle.weather.chatting.websocket.config;
 
+import com.idle.weather.chatting.kafka.producer.ChatMessageProducer;
 import com.idle.weather.chatting.message.api.port.ChatMessageService;
 
 import lombok.extern.slf4j.Slf4j;
@@ -27,8 +28,8 @@ public class WebSocketConfig {
     }
 
     @Bean
-    public ChatWebSocketHandler chatWebSocketHandler(ChatMessageService chatMessageService) {
-        return new ChatWebSocketHandler(chatMessageService);
+    public ChatWebSocketHandler chatWebSocketHandler(ChatMessageProducer chatMessageProducer) {
+        return new ChatWebSocketHandler(chatMessageProducer);
     }
 
 }
