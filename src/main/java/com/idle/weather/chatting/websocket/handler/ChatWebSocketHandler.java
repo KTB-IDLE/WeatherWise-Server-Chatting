@@ -9,6 +9,7 @@ import lombok.extern.slf4j.Slf4j;
 import org.springframework.web.reactive.socket.WebSocketHandler;
 import org.springframework.web.reactive.socket.WebSocketSession;
 import org.springframework.web.reactive.socket.WebSocketMessage;
+import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
 
 import java.util.Map;
@@ -23,20 +24,23 @@ public class ChatWebSocketHandler implements WebSocketHandler {
 
     @Override
     public Mono<Void> handle(WebSocketSession session) {
-        return session.receive()
+        Flux<WebSocketMessage> output = session.receive()
                 .map(WebSocketMessage::getPayloadAsText)
-                .flatMap(payload -> processMessage(payload, session))
-                .then();
+                .flatMap(payload -> processMessage(payload, session));
+
+        return session.send(output);
     }
 
-    private Mono<Void> processMessage(String payload, WebSocketSession session) {
+    private Mono<WebSocketMessage> processMessage(String payload, WebSocketSession session) {
         return Mono.fromCallable(() -> objectMapper.readValue(payload, KafkaChatMessageRequest.class))
-                .doOnNext(request -> {
-                    kafkaProducer.sendMessage(request);
-                    log.info("카프카 - 메시지 전송 성공: {}", request.message());
+                .doOnNext(request -> kafkaProducer.sendMessage(request)) // kafka 메시지 전송
+                .map(request -> {
+                    String msg = "메시지 전송 성공: " + request.message();
+                    return session.textMessage(msg); // WebSocketMessage 만들어서 리턴
                 })
-                .flatMap(request -> session.send(Mono.just(session.textMessage("메시지 전송 성공: " + request.message()))))
-                .doOnError(e -> log.error("카프카 - 메시지 처리 실패: {}", e.getMessage()))
-                .onErrorResume(e -> Mono.empty()); // 에러 발생 시 Mono 빈 스트림 반환
+                .onErrorResume(e -> {
+                    log.error("Kafka - 메시지 처리 실패: {}", e.getMessage());
+                    return Mono.just(session.textMessage("에러 발생: " + e.getMessage()));
+                });
     }
 }
