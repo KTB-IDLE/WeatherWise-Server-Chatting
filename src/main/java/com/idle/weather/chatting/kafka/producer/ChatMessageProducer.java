@@ -22,13 +22,14 @@ public class ChatMessageProducer {
     public void sendMessage(KafkaChatMessageRequest message) {
         try {
             String payload = objectMapper.writeValueAsString(message);
-
-            CompletableFuture<SendResult<String, String>> future = kafkaTemplate.send("chatting-topic", payload);
+            String key = String.valueOf(message.chatRoomId()); // chatRoomId를 key로 설정
+            CompletableFuture<SendResult<String, String>> future = kafkaTemplate.send("chatting-topic", key, payload);
 
             future.whenComplete((result, ex) -> {
                 if (ex == null) {
                     log.info("Kafka 메시지 전송 성공: topic={}, offset={}, payload={}",
                             result.getRecordMetadata().topic(),
+                            result.getRecordMetadata().partition(),
                             result.getRecordMetadata().offset(),
                             payload);
                 } else {
