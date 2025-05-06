@@ -68,14 +68,17 @@ WeatherWise프로젝트에서 대용량 트래픽이 예상되는 실시간 기�
 
 ## 🔁 메시지 흐름
 
-[Client] ⇄ WebSocket ⇄ WebFlux
-                        ↓
-               Kafka Producer
-                        ↓
-               Kafka Topic (chatRoomId key 기반 파티셔닝)
-                        ↓
-               Kafka Consumer
-                        ↓
-    R2DBC (DB 저장) + Redis (최신 메시지 캐시)
-                        ↓
-         WebSocket Broadcaster (채팅방 전체에 메시지 전파)
+[WebSocket Client]
+      ⬇
+[WebSocketHandler (Spring WebFlux)]
+      ⬇
+[Kafka Producer]
+      ⬇
+[Kafka Topic (chatting-topic, Key=chatRoomId)]
+      ⬇
+[Kafka Consumer]
+      ⬇
+[Redis (ZSet, 최근 100개 메시지 캐싱)] + [R2DBC Repository (MySQL 저장)]
+      ⬇
+[WebSocket Broadcaster] → [다른 WebSocket Clients에 메시지 전송]
+
