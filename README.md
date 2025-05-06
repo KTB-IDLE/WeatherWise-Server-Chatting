@@ -1,6 +1,4 @@
-from IPython.display import Markdown
 
-readme_content = """
 # WeatherWise-Server-Chatting
 
 WeatherWise의 실시간 기상 특보 채팅 기능을 담당하는 마이크로서비스입니다.  
