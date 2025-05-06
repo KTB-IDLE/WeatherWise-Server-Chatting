@@ -68,6 +68,7 @@ WeatherWise프로젝트에서 대용량 트래픽이 예상되는 실시간 기�
 
 ## 🔁 메시지 흐름
 
+```
 [WebSocket Client]
       ⬇
 [WebSocketHandler (Spring WebFlux)]
@@ -80,5 +81,8 @@ WeatherWise프로젝트에서 대용량 트래픽이 예상되는 실시간 기�
       ⬇
 [Redis (ZSet, 최근 100개 메시지 캐싱)] + [R2DBC Repository (MySQL 저장)]
       ⬇
-[WebSocket Broadcaster] → [다른 WebSocket Clients에 메시지 전송]
+[WebSocket Broadcaster]
+      ⬇
+[다른 WebSocket Clients에 메시지 전송]
+```
 
