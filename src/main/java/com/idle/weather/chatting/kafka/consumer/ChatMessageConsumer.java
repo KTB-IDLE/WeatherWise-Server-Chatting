@@ -19,7 +19,11 @@ public class ChatMessageConsumer {
     private final ChatMessageService chatMessageService;
     private final WebSocketBroadcaster broadcaster;
 
-    @KafkaListener(topics = "chatting-topic", groupId = "chatting-group")
+    @KafkaListener(
+            topics = "chatting-topic",
+            groupId = "chatting-group",
+            concurrency = "3"
+    )
     public void consumeMessage(String message) {
         try {
             KafkaChatMessageRequest kafkaRequest = objectMapper.readValue(message, KafkaChatMessageRequest.class);
