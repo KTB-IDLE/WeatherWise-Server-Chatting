@@ -9,6 +9,8 @@ import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Component;
 import org.springframework.web.reactive.function.client.WebClient;
 import reactor.core.publisher.Flux;
+import reactor.core.publisher.Mono;
+import reactor.util.retry.Retry;
 
 import java.time.LocalDate;
 import java.time.LocalDateTime;
@@ -39,17 +41,25 @@ public class ExternalWeatherApiClient {
                             .queryParam("authKey", authKey)
                             .build())
                     .retrieve()
+                    .onStatus(status -> status.is4xxClientError() || status.is5xxServerError(),
+                        response -> {
+                            log.error("기상청 API HTTP 오류: {}", response.statusCode());
+                            return Mono.error(new RuntimeException("API 응답 실패"));
+                        })
                     .bodyToMono(String.class)
-                    .timeout(Duration.ofSeconds(60)) // 호출 타임아웃 적용
+                    .timeout(Duration.ofSeconds(15)) // 15초 호출 타임아웃 적용
+                    .retryWhen(Retry.backoff(3,Duration.ofSeconds(2)).maxBackoff(Duration.ofSeconds(10)))
                     .flatMapMany(this::parseWeatherAlerts)
                     .doOnSubscribe(sub -> log.info("기상특보 API 호출 시작..."))
                     .doOnNext(res -> log.info("기상특보 API 호출 성공"))
                     .doOnError(e -> log.error("기상특보 API 호출 중 에러 발생", e))
                     .onErrorResume(e -> {
                         if (e instanceof TimeoutException) {
-                            log.error("API 호출이 타임아웃되었습니다.");
+                            log.error("기상청 API 타임아웃 발생", e);
+                        } else {
+                            log.error("기상청 API 호출 중 예외 발생", e);
                         }
-                        return Flux.empty(); // 에러 발생 시 빈 결과 반환
+                        return Flux.empty();
                     });
     }
 
