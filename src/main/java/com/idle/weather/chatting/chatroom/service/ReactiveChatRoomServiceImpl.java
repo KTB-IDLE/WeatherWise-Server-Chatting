@@ -9,7 +9,6 @@ import com.idle.weather.chatting.weatheralert.repository.ReactiveWeatherAlertEnt
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
-import org.springframework.transaction.ReactiveTransactionManager;
 import org.springframework.transaction.reactive.TransactionalOperator;
 import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
@@ -25,12 +24,10 @@ public class ReactiveChatRoomServiceImpl implements ChatRoomService {
 
     private final ChatRoomR2dbcRepository chatRoomRepository;
     private final WeatherAlertR2dbcRepository weatherAlertRepository;
-    private final ReactiveTransactionManager transactionManager;
+    private final TransactionalOperator transactionalOperator;
 
     @Override
     public Mono<ReactiveChatRoomEntity> getOrCreateChatRoom(String parentRegionCode, String parentRegionName) {
-        TransactionalOperator transactionalOperator = TransactionalOperator.create(transactionManager);
-
         return chatRoomRepository.findByParentRegionCode(parentRegionCode)
                 .switchIfEmpty(
                         Mono.defer(() -> {
@@ -47,14 +44,18 @@ public class ReactiveChatRoomServiceImpl implements ChatRoomService {
 
     @Override
     public Mono<Void> deleteChatRoomById(Long chatRoomId) {
-        return chatRoomRepository.findById(chatRoomId)
+        return transactionalOperator.transactional(
+            chatRoomRepository.findById(chatRoomId)
                 .switchIfEmpty(Mono.error(new IllegalArgumentException("ChatRoom not found with id: " + chatRoomId)))
-                .flatMap(chatRoomRepository::delete);
+                .flatMap(chatRoomRepository::delete)
+        );
     }
 
     @Override
     public Mono<Void> saveChatRoom(ReactiveChatRoomEntity chatRoom) {
-        return chatRoomRepository.save(chatRoom).then();
+        return transactionalOperator.transactional(
+                chatRoomRepository.save(chatRoom).then()
+        );
     }
 
     @Override
@@ -71,10 +72,12 @@ public class ReactiveChatRoomServiceImpl implements ChatRoomService {
 
     @Override
     public Mono<Void> deleteOldDeactivatedChatRooms(int day) {
-        return chatRoomRepository.findAllDeactivatedOlderThan(LocalDateTime.now().minusDays(day))
+        return transactionalOperator.transactional(
+                chatRoomRepository.findAllDeactivatedOlderThan(LocalDateTime.now().minusDays(day))
                 .flatMap(chatRoom -> chatRoomRepository.delete(chatRoom)
                         .doOnSuccess(unused -> log.info("오래된 비활성화 채팅방 삭제: {}", chatRoom.getName())))
-                .then();
+                .then()
+        );
     }
 
     @Override
@@ -85,7 +88,8 @@ public class ReactiveChatRoomServiceImpl implements ChatRoomService {
 
     @Override
     public Mono<Void> updateChatRoomName(Long chatRoomId) {
-        return weatherAlertRepository.findByChatRoomIdAndIsActivatedTrue(chatRoomId)
+        return transactionalOperator.transactional(
+                weatherAlertRepository.findByChatRoomIdAndIsActivatedTrue(chatRoomId)
                 .map(ReactiveWeatherAlertEntity::getAlertType)
                 .collect(Collectors.toSet())
                 .flatMap(alertTypes -> {
@@ -96,7 +100,8 @@ public class ReactiveChatRoomServiceImpl implements ChatRoomService {
                                 chatRoom.updateName(newName);
                                 return saveChatRoom(chatRoom);
                             });
-                });
+                })
+        );
 
     }
 }
