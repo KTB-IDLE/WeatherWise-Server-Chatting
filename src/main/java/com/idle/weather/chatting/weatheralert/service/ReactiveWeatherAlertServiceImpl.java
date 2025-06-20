@@ -10,10 +10,12 @@ import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.apache.commons.codec.digest.DigestUtils;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.reactive.TransactionalOperator;
 import reactor.core.publisher.Mono;
 import reactor.core.publisher.Flux;
 
 import java.time.LocalDateTime;
+import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.stream.Collectors;
@@ -26,99 +28,75 @@ public class ReactiveWeatherAlertServiceImpl implements WeatherAlertService {
     private final ExternalWeatherApiClient externalWeatherApiClient;
     private final WeatherAlertR2dbcRepository weatherAlertRepository;
     private final ChatRoomService chatRoomService;
+    private final TransactionalOperator tx;
 
     @Override
     public Mono<Void> updateWeatherAlerts() {
         log.info("기상특보 업데이트 시작 ...");
         return externalWeatherApiClient.fetchWeatherAlerts()
                 .collectList()
-                .flatMap(apiAlerts -> weatherAlertRepository.findAllActivatedAlerts()
-                        .collectList()
-                        .flatMap(dbAlerts -> {
-                            // DB 기상 특보를 Map으로 변환
-                            Map<String, ReactiveWeatherAlertEntity> dbAlertMap = dbAlerts.stream()
-                                    .collect(Collectors.toMap(this::generateUniqueKey, alert -> alert));
-
-                            Flux<Void> saveOrUpdateFlux = Flux.fromIterable(apiAlerts)
-                                    .flatMap(apiAlert -> {
-                                        String apiAlertKey = generateUniqueKey(apiAlert);
-                                        ReactiveWeatherAlertEntity dbAlert = dbAlertMap.get(apiAlertKey);
-
-
-
-
-
-                                        if (dbAlert == null) {
-                                            // 새로운 기상특보 저장
-                                            return chatRoomService.getOrCreateChatRoom(apiAlert.getParentRegionCode(), apiAlert.getParentRegionName())
-                                                    .flatMap(chatRoom -> {
-                                                        apiAlert.updateChatRoomId(chatRoom.getId()); // chatRoomId 설정
-                                                        return weatherAlertRepository.save(apiAlert);
-                                                    })
-                                                    .doOnNext(savedAlert -> log.info("새로운 기상특보 추가됨: {}", savedAlert))
-                                                    .flatMap(savedAlert -> chatRoomService.updateChatRoomName(savedAlert.getChatRoomId()));
-                                        } else {
-                                            // 기존 기상특보 업데이트
-                                            if (hasAlertChanged(dbAlert, apiAlert)) {
-                                                dbAlert.updateWeatherAlert(apiAlert);
-                                                return weatherAlertRepository.save(dbAlert)
-                                                        .doOnNext(updatedAlert -> log.info("기상특보 업데이트됨: {}", updatedAlert))
-                                                        .flatMap(updatedAlert -> {
-                                                            // 채팅방 이름 업데이트
-                                                            return chatRoomService.getChatRoomById(updatedAlert.getChatRoomId())
-                                                                    .flatMap(chatRoom -> {
-                                                                        return chatRoomService.updateChatRoomName(updatedAlert.getChatRoomId());
-                                                                    })
-                                                                    .then();
-                                                        });
-                                            } else {
-                                                return Mono.empty(); // 변경 없음
-                                            }
-                                        }
-                                    });
-
-                            // API에 없는 DB의 기상특보 비활성화
-                            Flux<Void> deactivateFlux = Flux.fromIterable(dbAlertMap.values())
-                                    .flatMap(dbAlert -> {
-                                        String dbAlertKey = generateUniqueKey(dbAlert);
-                                        boolean existsInApi = apiAlerts.stream()
-                                                .anyMatch(apiAlert -> generateUniqueKey(apiAlert).equals(dbAlertKey));
-                                        if (!existsInApi) {
-                                            dbAlert.deactivateWeatherAlert();
-                                            return weatherAlertRepository.save(dbAlert)
-                                                    .doOnNext(deactivatedAlert -> log.info("기상특보 비활성화 : {}", deactivatedAlert))
-                                                    .flatMap(deactivatedAlert -> {
-                                                        // 채팅방 이름 업데이트 또는 비활성화
-                                                        return chatRoomService.getChatRoomById(deactivatedAlert.getChatRoomId())
-                                                                .flatMap(chatRoom -> {
-                                                                    // 현재 채팅방에 활성화된 기상특보가 더 이상 없는지 확인
-                                                                    return weatherAlertRepository.findByChatRoomIdAndIsActivatedTrue(deactivatedAlert.getChatRoomId())
-                                                                            .hasElements()
-                                                                            .flatMap(hasActiveAlerts -> {
-                                                                                if (!hasActiveAlerts) {
-                                                                                    // 채팅방 비활성화
-                                                                                    chatRoom.deactivateChatRoom();
-                                                                                    return chatRoomService.saveChatRoom(chatRoom);
-                                                                                } else {
-                                                                                    // 채팅방 이름 업데이트
-                                                                                    return chatRoomService.updateChatRoomName(chatRoom.getId());
-                                                                                }
-                                                                            });
-                                                                })
-                                                                .then();
-                                                    });
-                                        } else {
-                                            return Mono.empty(); // API에 존재
-                                        }
-                                    });
-
-                            // 모든 추가/업데이트와 비활성화를 순차적으로 실행
-                            return saveOrUpdateFlux
-                                    .thenMany(deactivateFlux)
-                                    .then();
-                        }))
-                .doOnError(e -> log.error("기상특보 업데이트 실패", e))
+                .flatMap(apiAlerts ->
+                        tx.transactional(
+                                synchronizeWithDatabase(apiAlerts)
+                        )
+                )
+                .doOnError(e -> log.error("기상 특보 업데이트 실패", e))
                 .then();
+    }
+
+    private Mono<Void> synchronizeWithDatabase(List<ReactiveWeatherAlertEntity> apiAlerts) {
+        return weatherAlertRepository.findAllActivatedAlerts()
+                .collectList()
+                .flatMap(dbAlerts -> {
+                    Map<String, ReactiveWeatherAlertEntity> dbMap = dbAlerts.stream()
+                            .collect(Collectors.toMap(this::generateUniqueKey, alert -> alert));
+
+                    Mono<Void> updateOrInsert = Flux.fromIterable(apiAlerts)
+                            .flatMap(api -> upsertOne(api, dbMap.remove(generateUniqueKey(api))))
+                            .then();
+
+                    Mono<Void> deactivate = Flux.fromIterable(dbMap.values())
+                            .flatMap(this::deactivateOne)
+                            .then();
+
+                    return updateOrInsert.then(deactivate);
+                });
+    }
+
+    /** 신규 저장 또는 변경된 특보 업데이트 */
+    private Mono<Void> upsertOne(ReactiveWeatherAlertEntity api, ReactiveWeatherAlertEntity db) {
+        if ( db == null) {
+            return chatRoomService.getOrCreateChatRoom(api.getParentRegionCode(), api.getParentRegionName())
+                    .flatMap(room -> {
+                        api.updateChatRoomId(room.getId());
+                        return weatherAlertRepository.save(api)
+                                .then(chatRoomService.updateChatRoomName(room.getId()));
+                    });
+        }
+        if (!hasAlertChanged(db, api)) {
+            return Mono.empty();
+        }
+        db.updateWeatherAlert(api);
+        return weatherAlertRepository.save(db)
+                .then(chatRoomService.updateChatRoomName(db.getChatRoomId()));
+    }
+
+    /** DB에만 존재하는 특보 비활성화 */
+    private Mono<Void> deactivateOne(ReactiveWeatherAlertEntity db) {
+        db.deactivateWeatherAlert();
+        return weatherAlertRepository.save(db)
+                .flatMap(saved -> chatRoomService.getChatRoomById(saved.getChatRoomId())
+                        .flatMap(room -> weatherAlertRepository.findByChatRoomIdAndIsActivatedTrue(room.getId())
+                                .hasElements()
+                                .flatMap(has -> {
+                                    if (!has) {
+                                        room.deactivateChatRoom();
+                                        return chatRoomService.saveChatRoom(room);
+                                    }
+                                    return chatRoomService.updateChatRoomName(room.getId());
+                                })
+                        )
+                );
     }
 
     @Override
